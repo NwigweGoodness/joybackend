@@ -1,6 +1,9 @@
 {
   "name": "auracious-sip",
   "version": "1.0.0",
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "description": "AURACIOUS SIP Production Package",
   "main": "backend.js",
   "scripts": {
