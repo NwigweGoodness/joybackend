@@ -25,9 +25,14 @@ if (!admin.apps.length) {
         let serviceAccount;
         
         if (process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
-            // Recommended: Decode from Base64 to bypass escaping issues
-            const decoded = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_B64, 'base64').toString('utf8');
-            serviceAccount = JSON.parse(decoded);
+            const b64Value = process.env.FIREBASE_SERVICE_ACCOUNT_B64.trim();
+            // Safety: Check if it's actually raw JSON instead of Base64
+            if (b64Value.startsWith('{')) {
+                serviceAccount = JSON.parse(b64Value);
+            } else {
+                const decoded = Buffer.from(b64Value, 'base64').toString('utf8');
+                serviceAccount = JSON.parse(decoded);
+            }
         } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
             serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
         } else {
@@ -270,6 +275,16 @@ const app = express();
 app.use(express.json());
 app.use(cors()); // Enables CORS for frontend domain
 
+// Global JSON Error Handler (Prevents HTML error pages)
+app.use((err, req, res, next) => {
+    console.error("Server Error:", err.stack);
+    res.status(500).json({
+        success: false,
+        message: "Internal server error",
+        error: process.env.NODE_ENV === 'development' ? err.message : undefined
+    });
+});
+
 // Health Check
 app.get('/api/health', (req, res) => res.json({ status: 'online', service: 'AURACIOUS SIP API' }));
 
@@ -373,10 +388,18 @@ app.post('/api/verify-payment', async (req, res) => {
     }
 });
 
+// Global 404 Handler
+app.use((req, res) => {
+    res.status(404).json({
+        success: false,
+        message: "Route not found"
+    });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`AURACIOUS SIP Backend Live on Port ${PORT}`);
 });
 
 // Export Shared Resources
-module.exports = { admin, db, axios, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription, app };
+module.exports = { admin, db, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription, app };
