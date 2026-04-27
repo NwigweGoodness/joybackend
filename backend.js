@@ -1,4 +1,5 @@
 // backend.js - Core Shared Utility for AURACIOUS SIP API
+require('dotenv').config();
 const admin = require('firebase-admin');
 const axios = require('axios');
 const express = require('express');
@@ -7,6 +8,10 @@ const cors = require('cors');
 // 1. Safe Firebase Initialization (Idempotent)
 if (!admin.apps.length) {
     try {
+        if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
+            throw new Error("FIREBASE_SERVICE_ACCOUNT environment variable is missing.");
+        }
+        
         // Parse the service account from an environment variable string
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
         admin.initializeApp({
@@ -17,11 +22,11 @@ if (!admin.apps.length) {
         admin.database().getRules(); 
         console.log("Firebase Admin Initialized Successfully");
     } catch (error) {
-        console.error("CRITICAL: Firebase Admin Init Failed:", error.message);
+        console.error("CRITICAL: Firebase Admin Init Failed. Ensure FIREBASE_SERVICE_ACCOUNT is a valid JSON string:", error.message);
+        process.exit(1); // Stop the process so Render knows the deploy failed
     }
 }
-
-const db = admin.database();
+const db = admin.database(); // Now safe to call
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 
 // 2. Shared Debugging & Verification Logger
