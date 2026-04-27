@@ -284,10 +284,18 @@ app.post('/api/verify-payment', async (req, res) => {
             const transSnap = await db.ref(`transactions/${reference}`).once('value');
             const trans = transSnap.val();
 
-            if (trans && trans.items) {
+            if (!trans) {
+                await logVerification(reference, 'Webhook', 'Warning', 'Transaction record missing in database.');
+                return res.status(200).send('Webhook Received (No record found)');
+            }
+
+            // Identify between Order and Subscription based on properties
+            if (trans.items) {
                 await processOrder(reference, trans, amountPaid, true);
-            } else if (trans && trans.months) {
+            } else if (trans.months) {
                 await processSubscription(reference, trans.months, amountPaid, trans.amount, true);
+            } else {
+                await logVerification(reference, 'Webhook', 'Error', 'Unknown transaction type (neither items nor months found).');
             }
             res.status(200).send('Webhook Processed');
         } catch (e) {
