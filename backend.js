@@ -1,6 +1,8 @@
 // backend.js - Core Shared Utility for AURACIOUS SIP API
 const admin = require('firebase-admin');
 const axios = require('axios');
+const express = require('express');
+const cors = require('cors');
 
 // 1. Safe Firebase Initialization (Idempotent)
 if (!admin.apps.length) {
@@ -42,7 +44,6 @@ const verifyPaystack = async (reference) => {
     if (!reference) throw new Error("Transaction reference is required");
 
     // Strict sanitization of the reference string
-    const sanitizedRef = encodeURIComponent(reference.trim());
     const sanitizedRef = encodeURIComponent(reference.trim().replace(/[\[\]\.\#\$]/g, ''));
     const response = await axios.get(`https://api.paystack.co/transaction/verify/${sanitizedRef}`, {
         headers: { 
@@ -206,5 +207,90 @@ const processSubscription = async (reference, months, amountPaid, frontendAmount
     return { success: true, expiresAt: newExpiry, message: 'Subscription processed successfully' };
 };
 
-// 4. Export Shared Resources
-module.exports = { admin, db, axios, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription };
+// 6. Express Server Implementation for Render Deployment
+const app = express();
+app.use(express.json());
+app.use(cors()); // Enables CORS for frontend domain
+
+// Health Check
+app.get('/api/health', (req, res) => res.json({ status: 'online', service: 'AURACIOUS SIP API' }));
+
+/**
+ * Route: /api/orders
+ * Handles order verification and stock deduction
+ */
+app.post('/api/orders', async (req, res) => {
+    const { reference, orderData } = req.body;
+    try {
+        const { amountPaid } = await verifyPaystack(reference);
+        const result = await processOrder(reference, orderData, amountPaid);
+        res.json(result);
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+});
+
+/**
+ * Route: /api/subscription
+ * Handles subscription renewals and Tinubu panel price updates
+ */
+app.post('/api/subscription', async (req, res) => {
+    const { reference, months, amount: frontendAmount } = req.body;
+    try {
+        const { amountPaid } = await verifyPaystack(reference);
+        const result = await processSubscription(reference, months, amountPaid, frontendAmount);
+        res.json(result);
+    } catch (error) {
+        res.status(400).json({ success: false, message: error.message });
+    }
+});
+
+app.patch('/api/subscription', async (req, res) => {
+    const { monthlyPrice, grace } = req.body;
+    try {
+        await db.ref('subscriptionPricing').update({ monthlyPrice, grace, updatedAt: Date.now() });
+        res.json({ success: true });
+    } catch (err) {
+        res.status(500).json({ success: false, message: err.message });
+    }
+});
+
+/**
+ * Route: /api/verify-payment
+ * Paystack Webhook Listener
+ */
+app.post('/api/verify-payment', async (req, res) => {
+    const crypto = require('crypto');
+    const hash = crypto.createHmac('sha512', PAYSTACK_SECRET_KEY).update(JSON.stringify(req.body)).digest('hex');
+    
+    if (hash !== req.headers['x-paystack-signature']) return res.status(400).send('Invalid Signature');
+
+    const event = req.body;
+    if (event.event === 'charge.success') {
+        const reference = event.data.reference;
+        try {
+            const { amountPaid } = await verifyPaystack(reference);
+            const transSnap = await db.ref(`transactions/${reference}`).once('value');
+            const trans = transSnap.val();
+
+            if (trans && trans.items) {
+                await processOrder(reference, trans, amountPaid, true);
+            } else if (trans && trans.months) {
+                await processSubscription(reference, trans.months, amountPaid, trans.amount, true);
+            }
+            res.status(200).send('Webhook Processed');
+        } catch (e) {
+            res.status(500).send(e.message);
+        }
+    } else {
+        res.status(200).send('Event Ignored');
+    }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`AURACIOUS SIP Backend Live on Port ${PORT}`);
+});
+
+// Export Shared Resources
+module.exports = { admin, db, axios, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription, app };
