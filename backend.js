@@ -231,8 +231,28 @@ app.get('/api/health', (req, res) => res.json({ status: 'online', service: 'AURA
  * Handles order verification and stock deduction
  */
 app.post('/api/orders', async (req, res) => {
-    const { reference, orderData } = req.body;
+    let { reference, orderData } = req.body;
     try {
+        if (!reference) throw new Error("Reference is required for verification.");
+
+        // Recovery Logic: If orderData is missing, reconstruct from transaction ledger
+        if (!orderData) {
+            const transSnap = await db.ref(`transactions/${reference}`).once('value');
+            if (transSnap.exists()) {
+                const trans = transSnap.val();
+                orderData = {
+                    customerName: trans.customerName,
+                    email: trans.email,
+                    phone: trans.phone,
+                    address: trans.address,
+                    note: trans.note || "",
+                    items: trans.items
+                };
+            }
+        }
+
+        if (!orderData || !orderData.items) throw new Error("Order data could not be recovered. Please contact support.");
+
         const { amountPaid } = await verifyPaystack(reference);
         const result = await processOrder(reference, orderData, amountPaid);
         res.json(result);
