@@ -5,17 +5,24 @@ const axios = require('axios');
 const express = require('express');
 const cors = require('cors');
 
+// 0. Environment Validation
+const REQUIRED_ENV = [
+    'FIREBASE_SERVICE_ACCOUNT',
+    'PAYSTACK_SECRET_KEY',
+    'FLW_CLIENT_SECRET'
+];
+
+const missingEnv = REQUIRED_ENV.filter(k => !process.env[k]);
+if (missingEnv.length > 0) {
+    console.error(`CRITICAL ERROR: Missing environment variables: ${missingEnv.join(', ')}`);
+    process.exit(1);
+}
+
 // 1. Safe Firebase Initialization (Idempotent)
 if (!admin.apps.length) {
     try {
-        if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
-            throw new Error("FIREBASE_SERVICE_ACCOUNT environment variable is missing.");
-        }
-        
-        // Parse the service account from an environment variable string
         const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
         
-        // Fix for private key newlines: replace escaped \n with real newlines
         if (serviceAccount.private_key) {
             serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
         }
@@ -24,25 +31,29 @@ if (!admin.apps.length) {
             credential: admin.credential.cert(serviceAccount),
             databaseURL: process.env.FIREBASE_DATABASE_URL || "https://audacious-sip-default-rtdb.firebaseio.com/"
         });
-        // Enable keep-alive for faster serverless execution
+
         admin.database().getRules(); 
         console.log("Firebase Admin Initialized Successfully");
     } catch (error) {
-        console.error("CRITICAL: Firebase Admin Init Failed. Ensure FIREBASE_SERVICE_ACCOUNT is a valid JSON string:", error.message);
-        process.exit(1); // Stop the process so Render knows the deploy failed
+        console.error("CRITICAL: Firebase Admin Init Failed. Check FIREBASE_SERVICE_ACCOUNT JSON format:", error.message);
+        process.exit(1);
     }
 }
-const db = admin.database(); // Now safe to call
+
+const db = admin.database();
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
+const FLW_SECRET_KEY = process.env.FLW_CLIENT_SECRET;
 
 // 2. Shared Debugging & Verification Logger
 const logVerification = async (reference, type, status, message) => {
+    // Security: Filter sensitive data from logs
+    const safeMessage = message ? message.replace(/(Bearer|sk_)\S+/gi, '[REDACTED]') : '';
     try {
         await db.ref('verificationLogs').push({
             reference: reference || 'N/A',
             type, 
             status, 
-            message,
+            message: safeMessage,
             timestamp: Date.now()
         });
     } catch (e) {
@@ -61,7 +72,7 @@ const verifyPaystack = async (reference) => {
             Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
             'Cache-Control': 'no-cache'
         },
-        timeout: 10000 // 10 second timeout to prevent Vercel execution hang
+        timeout: 10000
     });
 
     const data = response.data.data;
@@ -71,6 +82,28 @@ const verifyPaystack = async (reference) => {
 
     return {
         amountPaid: data.amount / 100, // Kobo to Naira
+        raw: data
+    };
+};
+
+// 3.1 Flutterwave Verification Engine (Backup)
+const verifyFlutterwave = async (transactionId) => {
+    if (!transactionId) throw new Error("Flutterwave transaction ID is required");
+
+    const response = await axios.get(`https://api.flutterwave.com/v3/transactions/${transactionId}/verify`, {
+        headers: { 
+            Authorization: `Bearer ${FLW_SECRET_KEY}`
+        }
+    });
+
+    const data = response.data.data;
+    if (!data || data.status !== 'successful') {
+        throw new Error(data ? `Gateway Status: ${data.status}` : "Invalid response from Flutterwave");
+    }
+
+    return {
+        amountPaid: data.amount,
+        reference: data.tx_ref,
         raw: data
     };
 };
