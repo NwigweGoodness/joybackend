@@ -7,7 +7,8 @@ const cors = require('cors');
 
 // 0. Environment Validation
 const REQUIRED_ENV = [
-    'FIREBASE_SERVICE_ACCOUNT',
+    // Checks for either raw JSON or Base64 version
+    process.env.FIREBASE_SERVICE_ACCOUNT_B64 ? 'FIREBASE_SERVICE_ACCOUNT_B64' : 'FIREBASE_SERVICE_ACCOUNT',
     'PAYSTACK_SECRET_KEY',
     'FLW_CLIENT_SECRET'
 ];
@@ -21,10 +22,23 @@ if (missingEnv.length > 0) {
 // 1. Safe Firebase Initialization (Idempotent)
 if (!admin.apps.length) {
     try {
-        const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        let serviceAccount;
         
+        if (process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
+            // Recommended: Decode from Base64 to bypass escaping issues
+            const decoded = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_B64, 'base64').toString('utf8');
+            serviceAccount = JSON.parse(decoded);
+        } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
+            serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+        } else {
+            throw new Error("Missing FIREBASE_SERVICE_ACCOUNT or FIREBASE_SERVICE_ACCOUNT_B64");
+        }
+
+        // Critical Fix: Ensure private_key uses real newlines and is trimmed
         if (serviceAccount.private_key) {
-            serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+            serviceAccount.private_key = serviceAccount.private_key
+                .replace(/\\n/g, '\n')
+                .trim();
         }
 
         admin.initializeApp({
@@ -35,7 +49,7 @@ if (!admin.apps.length) {
         admin.database().getRules(); 
         console.log("Firebase Admin Initialized Successfully");
     } catch (error) {
-        console.error("CRITICAL: Firebase Admin Init Failed. Check FIREBASE_SERVICE_ACCOUNT JSON format:", error.message);
+        console.error("CRITICAL: Firebase Admin initialization failed: check FIREBASE_SERVICE_ACCOUNT format. Details:", error.message);
         process.exit(1);
     }
 }
