@@ -9,8 +9,7 @@ const cors = require('cors');
 const REQUIRED_ENV = [
     // Checks for either raw JSON or Base64 version
     process.env.FIREBASE_SERVICE_ACCOUNT_B64 ? 'FIREBASE_SERVICE_ACCOUNT_B64' : 'FIREBASE_SERVICE_ACCOUNT',
-    'PAYSTACK_SECRET_KEY',
-    'FLW_CLIENT_SECRET'
+    'PAYSTACK_SECRET_KEY'
 ];
 
 const missingEnv = REQUIRED_ENV.filter(k => !process.env[k]);
@@ -61,7 +60,6 @@ if (!admin.apps.length) {
 
 const db = admin.database();
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
-const FLW_SECRET_KEY = process.env.FLW_CLIENT_SECRET;
 
 // 2. Shared Debugging & Verification Logger
 const logVerification = async (reference, type, status, message) => {
@@ -101,28 +99,6 @@ const verifyPaystack = async (reference) => {
 
     return {
         amountPaid: data.amount / 100, // Kobo to Naira
-        raw: data
-    };
-};
-
-// 3.1 Flutterwave Verification Engine (Backup)
-const verifyFlutterwave = async (transactionId) => {
-    if (!transactionId) throw new Error("Flutterwave transaction ID is required");
-
-    const response = await axios.get(`https://api.flutterwave.com/v3/transactions/${transactionId}/verify`, {
-        headers: { 
-            Authorization: `Bearer ${FLW_SECRET_KEY}`
-        }
-    });
-
-    const data = response.data.data;
-    if (!data || data.status !== 'successful') {
-        throw new Error(data ? `Gateway Status: ${data.status}` : "Invalid response from Flutterwave");
-    }
-
-    return {
-        amountPaid: data.amount,
-        reference: data.tx_ref,
         raw: data
     };
 };
