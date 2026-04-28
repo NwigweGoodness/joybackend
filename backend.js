@@ -28,13 +28,29 @@ if (!admin.apps.length) {
             const b64Value = process.env.FIREBASE_SERVICE_ACCOUNT_B64.trim();
             // Safety: Check if it's actually raw JSON instead of Base64
             if (b64Value.startsWith('{')) {
-                serviceAccount = JSON.parse(b64Value);
+                try {
+                    serviceAccount = JSON.parse(b64Value);
+                } catch (e) {
+                    console.error("CRITICAL ERROR: FIREBASE_SERVICE_ACCOUNT_B64 is raw JSON but failed to parse:", e.message);
+                    throw e;
+                }
             } else {
-                const decoded = Buffer.from(b64Value, 'base64').toString('utf8');
-                serviceAccount = JSON.parse(decoded);
+                try {
+                    const decoded = Buffer.from(b64Value, 'base64').toString('utf8');
+                    serviceAccount = JSON.parse(decoded);
+                } catch (e) {
+                    console.error("CRITICAL ERROR: FIREBASE_SERVICE_ACCOUNT_B64 failed to decode or parse as JSON.");
+                    console.error("Ensure you encoded the ENTIRE JSON file string, not just the private key.");
+                    throw e;
+                }
             }
         } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-            serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+            try {
+                serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
+            } catch (e) {
+                console.error("CRITICAL ERROR: FIREBASE_SERVICE_ACCOUNT (raw JSON) failed to parse:", e.message);
+                throw e;
+            }
         } else {
             throw new Error("Missing FIREBASE_SERVICE_ACCOUNT or FIREBASE_SERVICE_ACCOUNT_B64");
         }
@@ -46,6 +62,11 @@ if (!admin.apps.length) {
                 .trim();
         }
 
+        // Essential check for service account keys
+        if (!serviceAccount.project_id || !serviceAccount.private_key || !serviceAccount.client_email) {
+            throw new Error("Firebase Service Account object is missing essential keys (project_id, private_key, or client_email).");
+        }
+
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount),
             databaseURL: process.env.FIREBASE_DATABASE_URL || "https://audacious-sip-default-rtdb.firebaseio.com/"
@@ -53,7 +74,10 @@ if (!admin.apps.length) {
 
         console.log("Firebase Admin Initialized Successfully");
     } catch (error) {
-        console.error("CRITICAL: Firebase Admin initialization failed: check FIREBASE_SERVICE_ACCOUNT format. Details:", error.message);
+        console.error("*****************************************");
+        console.error("DEPLOYMENT FAILURE: Firebase Init Error");
+        console.error("Details:", error.message);
+        console.error("*****************************************");
         process.exit(1);
     }
 }
