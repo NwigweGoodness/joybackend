@@ -4,6 +4,7 @@ const admin = require('firebase-admin');
 const axios = require('axios');
 const express = require('express');
 const cors = require('cors');
+const crypto = require('crypto');
 
 // 0. Environment Validation
 const REQUIRED_ENV = [
@@ -50,7 +51,6 @@ if (!admin.apps.length) {
             databaseURL: process.env.FIREBASE_DATABASE_URL || "https://audacious-sip-default-rtdb.firebaseio.com/"
         });
 
-        admin.database().getRules(); 
         console.log("Firebase Admin Initialized Successfully");
     } catch (error) {
         console.error("CRITICAL: Firebase Admin initialization failed: check FIREBASE_SERVICE_ACCOUNT format. Details:", error.message);
@@ -329,7 +329,6 @@ app.patch('/api/subscription', async (req, res) => {
  * Paystack Webhook Listener
  */
 app.post('/api/verify-payment', async (req, res) => {
-    const crypto = require('crypto');
     const hash = crypto.createHmac('sha512', PAYSTACK_SECRET_KEY).update(JSON.stringify(req.body)).digest('hex');
     
     if (hash !== req.headers['x-paystack-signature']) return res.status(400).send('Invalid Signature');
@@ -373,7 +372,7 @@ app.use((req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`AURACIOUS SIP Backend Live on Port ${PORT}`);
 });
 
