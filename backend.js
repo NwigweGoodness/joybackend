@@ -340,6 +340,11 @@ app.post('/api/verify-payment', async (req, res) => {
     }
 });
 
+// Basic Root Route for Health Check / Welcome
+app.get('/', (req, res) => {
+    res.json({ success: true, message: 'AURACIOUS SIP Backend is operational. Access API routes at /api/...' });
+});
+
 // Global 404 Handler
 app.use((req, res) => {
     res.status(404).json({
