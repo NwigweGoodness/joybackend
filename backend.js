@@ -1,6 +1,6 @@
 // backend.js - Core Shared Utility for AURACIOUS SIP API
 require('dotenv').config();
-const admin = require('firebase-admin');
+const { admin, db } = require('./firebaseAdmin');
 const axios = require('axios');
 const express = require('express');
 const cors = require('cors');
@@ -19,70 +19,6 @@ if (missingEnv.length > 0) {
     process.exit(1);
 }
 
-// 1. Safe Firebase Initialization (Idempotent)
-if (!admin.apps.length) {
-    try {
-        let serviceAccount;
-        
-        if (process.env.FIREBASE_SERVICE_ACCOUNT_B64) {
-            const b64Value = process.env.FIREBASE_SERVICE_ACCOUNT_B64.trim();
-            // Safety: Check if it's actually raw JSON instead of Base64
-            if (b64Value.startsWith('{')) {
-                try {
-                    serviceAccount = JSON.parse(b64Value);
-                } catch (e) {
-                    console.error("CRITICAL ERROR: FIREBASE_SERVICE_ACCOUNT_B64 is raw JSON but failed to parse:", e.message);
-                    throw e;
-                }
-            } else {
-                try {
-                    const decoded = Buffer.from(b64Value, 'base64').toString('utf8');
-                    serviceAccount = JSON.parse(decoded);
-                } catch (e) {
-                    console.error("CRITICAL ERROR: FIREBASE_SERVICE_ACCOUNT_B64 failed to decode or parse as JSON.");
-                    console.error("Ensure you encoded the ENTIRE JSON file string, not just the private key.");
-                    throw e;
-                }
-            }
-        } else if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-            try {
-                serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-            } catch (e) {
-                console.error("CRITICAL ERROR: FIREBASE_SERVICE_ACCOUNT (raw JSON) failed to parse:", e.message);
-                throw e;
-            }
-        } else {
-            throw new Error("Missing FIREBASE_SERVICE_ACCOUNT or FIREBASE_SERVICE_ACCOUNT_B64");
-        }
-
-        // Critical Fix: Ensure private_key uses real newlines and is trimmed
-        if (serviceAccount.private_key) {
-            serviceAccount.private_key = serviceAccount.private_key
-                .replace(/\\n/g, '\n')
-                .trim();
-        }
-
-        // Essential check for service account keys
-        if (!serviceAccount.project_id || !serviceAccount.private_key || !serviceAccount.client_email) {
-            throw new Error("Firebase Service Account object is missing essential keys (project_id, private_key, or client_email).");
-        }
-
-        admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount),
-            databaseURL: process.env.FIREBASE_DATABASE_URL || "https://audacious-sip-default-rtdb.firebaseio.com/"
-        });
-
-        console.log("Firebase Admin Initialized Successfully");
-    } catch (error) {
-        console.error("*****************************************");
-        console.error("DEPLOYMENT FAILURE: Firebase Init Error");
-        console.error("Details:", error.message);
-        console.error("*****************************************");
-        process.exit(1);
-    }
-}
-
-const db = admin.database();
 const PAYSTACK_SECRET_KEY = process.env.PAYSTACK_SECRET_KEY;
 
 // 2. Shared Debugging & Verification Logger
@@ -286,7 +222,24 @@ app.use((err, req, res, next) => {
 });
 
 // Health Check
-app.get('/api/health', (req, res) => res.json({ status: 'online', service: 'AURACIOUS SIP API' }));
+app.get('/api/health', async (req, res) => {
+    try {
+        // Verify Firebase connection by reading the server time offset
+        const snapshot = await db.ref('.info/serverTimeOffset').once('value');
+        res.json({ 
+            status: 'online', 
+            service: 'AURACIOUS SIP API',
+            firebase: 'connected',
+            details: { offset: snapshot.val() }
+        });
+    } catch (error) {
+        res.status(500).json({ 
+            status: 'error', 
+            firebase: 'disconnected',
+            message: error.message 
+        });
+    }
+});
 
 /**
  * Route: /api/orders
