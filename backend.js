@@ -354,4 +354,4 @@ app.listen(PORT, '0.0.0.0', () => {
 });
 
 // Export Shared Resources
-module.exports = { admin, db, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription, app };
+module.exports = { admin, db, axios, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription, app };
