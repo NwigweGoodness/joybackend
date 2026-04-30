@@ -68,7 +68,7 @@ const processOrder = async (reference, orderData, amountPaid, isWebhook = false)
     await logVerification(reference, 'Order', 'Attempt', 'Processing order via core logic');
 
     // Idempotency Check: Prevent duplicate orders for the same reference
-    const existingOrderSnap = await db.ref('orders').orderByChild('paymentReference').equalTo(reference).once('value');
+    const existingOrderSnap = await db.ref('orders').orderByChild('paymentReference').equalTo(reference).limitToFirst(1).once('value');
     if (existingOrderSnap.exists()) {
         await logVerification(reference, 'Order', 'Success', 'Idempotency: Order already exists');
         let existingOrder;
@@ -165,7 +165,7 @@ const processSubscription = async (reference, months, amountPaid, frontendAmount
     await logVerification(reference, 'Subscription', 'Attempt', 'Processing subscription via core logic');
 
     // Idempotency Check
-    const historySnap = await db.ref('subscription/history').orderByChild('reference').equalTo(reference).once('value');
+    const historySnap = await db.ref('subscription/history').orderByChild('reference').equalTo(reference).limitToFirst(1).once('value');
     if (historySnap.exists()) {
         await logVerification(reference, 'Subscription', 'Success', 'Idempotency: Subscription already updated');
         return { success: true, message: 'Subscription already updated' };
