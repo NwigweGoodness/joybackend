@@ -206,143 +206,39 @@ const processSubscription = async (reference, months, amountPaid, frontendAmount
     return { success: true, expiresAt: newExpiry, message: 'Subscription processed successfully' };
 };
 
-// 6. Express Server Implementation for Render Deployment
+// 6. Express Server Setup
 const app = express();
 app.use(express.json());
 app.use(cors()); // Enables CORS for frontend domain
 
-// Global JSON Error Handler (Prevents HTML error pages)
-app.use((err, req, res, next) => {
-    console.error("Server Error:", err.stack);
-    res.status(500).json({
-        success: false,
-        message: "Internal server error",
-        error: process.env.NODE_ENV === 'development' ? err.message : undefined
-    });
-});
+// Export Shared Resources BEFORE requiring routes to avoid circular dependency issues
+module.exports = { admin, db, axios, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription, app };
+
+// 7. Modular Routes
+const { handleOrder } = require('./orders');
+const { handleSubscription } = require('./subscription');
+const { handleWebhook } = require('./verify-payment');
+
+app.post('/api/orders', handleOrder);
+app.use('/api/subscription', handleSubscription); // Handles POST and PATCH
+app.post('/api/verify-payment', handleWebhook);
 
 // Health Check
 app.get('/api/health', async (req, res) => {
     try {
-        // Verify Firebase connection by reading the server time offset
         const snapshot = await db.ref('.info/serverTimeOffset').once('value');
-        res.json({ 
-            status: 'online', 
-            service: 'AURACIOUS SIP API',
-            firebase: 'connected',
-            details: { offset: snapshot.val() }
-        });
+        res.json({ status: 'online', service: 'AURACIOUS SIP API', firebase: 'connected' });
     } catch (error) {
-        res.status(500).json({ 
-            status: 'error', 
-            firebase: 'disconnected',
-            message: error.message 
-        });
-    }
-});
-
-/**
- * Route: /api/orders
- * Handles order verification and stock deduction
- */
-app.post('/api/orders', async (req, res) => {
-    let { reference, orderData } = req.body;
-    try {
-        if (!reference) throw new Error("Reference is required for verification.");
-
-        // Recovery Logic: If orderData is missing, reconstruct from transaction ledger
-        if (!orderData) {
-            const transSnap = await db.ref(`transactions/${reference}`).once('value');
-            if (transSnap.exists()) {
-                const trans = transSnap.val();
-                orderData = {
-                    customerName: trans.customerName,
-                    email: trans.email,
-                    phone: trans.phone,
-                    address: trans.address,
-                    note: trans.note || "",
-                    items: trans.items
-                };
-            }
-        }
-
-        if (!orderData || !orderData.items) throw new Error("Order data could not be recovered. Please contact support.");
-
-        const { amountPaid } = await verifyPaystack(reference);
-        const result = await processOrder(reference, orderData, amountPaid);
-        res.json(result);
-    } catch (error) {
-        res.status(400).json({ success: false, message: error.message });
-    }
-});
-
-/**
- * Route: /api/subscription
- * Handles subscription renewals and Tinubu panel price updates
- */
-app.post('/api/subscription', async (req, res) => {
-    const { reference, months, amount: frontendAmount } = req.body;
-    try {
-        const { amountPaid } = await verifyPaystack(reference);
-        const result = await processSubscription(reference, months, amountPaid, frontendAmount);
-        res.json(result);
-    } catch (error) {
-        res.status(400).json({ success: false, message: error.message });
-    }
-});
-
-app.patch('/api/subscription', async (req, res) => {
-    const { monthlyPrice, grace } = req.body;
-    try {
-        await db.ref('subscriptionPricing').update({ monthlyPrice, grace, updatedAt: Date.now() });
-        res.json({ success: true });
-    } catch (err) {
-        res.status(500).json({ success: false, message: err.message });
-    }
-});
-
-/**
- * Route: /api/verify-payment
- * Paystack Webhook Listener
- */
-app.post('/api/verify-payment', async (req, res) => {
-    const hash = crypto.createHmac('sha512', PAYSTACK_SECRET_KEY).update(JSON.stringify(req.body)).digest('hex');
-    
-    if (hash !== req.headers['x-paystack-signature']) return res.status(400).send('Invalid Signature');
-
-    const event = req.body;
-    if (event.event === 'charge.success') {
-        const reference = event.data.reference;
-        try {
-            const { amountPaid } = await verifyPaystack(reference);
-            const transSnap = await db.ref(`transactions/${reference}`).once('value');
-            const trans = transSnap.val();
-
-            if (!trans) {
-                await logVerification(reference, 'Webhook', 'Warning', 'Transaction record missing in database.');
-                return res.status(200).send('Webhook Received (No record found)');
-            }
-
-            // Identify between Order and Subscription based on properties
-            if (trans.items) {
-                await processOrder(reference, trans, amountPaid, true);
-            } else if (trans.months) {
-                await processSubscription(reference, trans.months, amountPaid, trans.amount, true);
-            } else {
-                await logVerification(reference, 'Webhook', 'Error', 'Unknown transaction type (neither items nor months found).');
-            }
-            res.status(200).send('Webhook Processed');
-        } catch (e) {
-            res.status(500).send(e.message);
-        }
-    } else {
-        res.status(200).send('Event Ignored');
+        res.status(500).json({ status: 'error', message: error.message });
     }
 });
 
 // Basic Root Route for Health Check / Welcome
-app.get('/', (req, res) => {
-    res.json({ success: true, message: 'AURACIOUS SIP Backend is operational. Access API routes at /api/...' });
+app.get("/", (req, res) => {
+  res.json({
+    success: true,
+    message: "Backend is running successfully"
+  });
 });
 
 // Global 404 Handler
@@ -353,10 +249,13 @@ app.use((req, res) => {
     });
 });
 
+// Global Error Handler
+app.use((err, req, res, next) => {
+    console.error("Server Error:", err.stack);
+    res.status(500).json({ success: false, message: "Internal server error" });
+});
+
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`AURACIOUS SIP Backend Live on Port ${PORT}`);
 });
-
-// Export Shared Resources
-module.exports = { admin, db, axios, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription, app };
