@@ -1,5 +1,84 @@
 // api/verify-payment.js - Paystack Webhook Listener & Redundant Transaction Coverage
-const 
+const { axios, db, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription } = require('./backend');
+const crypto = require('crypto');
+
+/**
+ * Manual Verification Endpoint
+ * Checks Paystack and DB to determine final status.
+ * Handles Auto-Recovery if payment is successful but record is missing.
+ */
+const handleManualVerification = async (req, res) => {
+    const rawRef = req.params.reference || req.query.reference;
+    if (!rawRef) return res.status(400).json({ success: false, status: 'failed', message: 'Reference is required' });
+
+    // Sanitize reference to prevent injection/errors
+    const reference = rawRef.trim().replace(/[\[\]\.\#\$]/g, '');
+
+    try {
+        await logVerification(reference, 'ManualVerify', 'Attempt', 'Checking transaction status');
+
+        // 1. Check Gateway Status directly for maximum accuracy
+        let paystackData;
+        try {
+            const response = await axios.get(`https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`, {
+                headers: { 
+                    Authorization: `Bearer ${PAYSTACK_SECRET_KEY}`,
+                    'Cache-Control': 'no-cache'
+                },
+                timeout: 10000
+            });
+            paystackData = response.data.data;
+        } catch (e) {
+            // Reference not found on Paystack
+            return res.json({ success: true, status: 'failed', message: 'Transaction not found on payment gateway' });
+        }
+
+        const gatewayStatus = paystackData.status;
+        const amountPaid = paystackData.amount / 100;
+
+        if (gatewayStatus === 'success') {
+            // 2. Check if already fulfilled in our database (Idempotency)
+            const orderSnap = await db.ref('orders').orderByChild('paymentReference').equalTo(reference).once('value');
+            const subHistorySnap = await db.ref('subscription/history').orderByChild('reference').equalTo(reference).once('value');
+
+            if (orderSnap.exists() || subHistorySnap.exists()) {
+                return res.json({ success: true, status: 'success', message: 'Payment Successful (Fulfilled)', amount: amountPaid, reference });
+            }
+
+            // 3. AUTO-RECOVERY: If success on gateway but not fulfilled in DB
+            const transSnap = await db.ref(`transactions/${reference}`).once('value');
+            const transData = transSnap.val();
+
+            if (!transData) {
+                await logVerification(reference, 'ManualVerify', 'Warning', 'Valid payment but no fulfillment data found in DB.');
+                return res.json({ success: true, status: 'success', message: 'Payment Successful but fulfillment data is missing in database.', amount: amountPaid, reference });
+            }
+
+            // Attempt fulfillment based on transaction type
+            if (transData.items) {
+                await processOrder(reference, transData, amountPaid, true);
+                return res.json({ success: true, status: 'success', message: 'Recovery: Payment verified and order fulfilled.', amount: amountPaid, reference });
+            } else if (transData.months) {
+                await processSubscription(reference, transData.months, amountPaid, transData.amount, true);
+                return res.json({ success: true, status: 'success', message: 'Recovery: Payment verified and subscription extended.', amount: amountPaid, reference });
+            }
+
+            return res.json({ success: true, status: 'success', message: 'Payment Successful', amount: amountPaid, reference });
+        } 
+        
+        // Handle pending/failed states returned by gateway
+        if (['failed', 'abandoned'].includes(gatewayStatus)) {
+            return res.json({ success: true, status: 'failed', message: `Payment ${gatewayStatus}`, amount: amountPaid, reference });
+        }
+
+        return res.json({ success: true, status: 'pending', message: 'Payment is pending or ongoing', amount: amountPaid, reference });
+
+    } catch (error) {
+        await logVerification(reference, 'ManualVerify', 'Error', error.message);
+        res.status(500).json({ success: false, message: 'Internal server error during verification' });
+    }
+};
+
 const handleWebhook = async (req, res) => {
     // Handle CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -75,4 +154,4 @@ const handleWebhook = async (req, res) => {
     }
 };
 
-module.exports = { handleWebhook };
+module.exports = { handleWebhook, handleManualVerification };

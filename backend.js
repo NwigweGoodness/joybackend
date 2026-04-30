@@ -216,13 +216,14 @@ app.use(cors()); // Enables CORS for frontend domain
 module.exports = { admin, db, axios, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription, app };
 
 // 7. Modular Routes
-const { handleOrder } = require('./api/orders');
-const { handleSubscription } = require('./api/subscription');
-const { handleWebhook } = require('./api/verify-payment');
+const { handleOrder } = require('./orders');
+const { handleSubscription } = require('./subscription');
+const { handleWebhook, handleManualVerification } = require('./verify-payment');
 
 app.post('/api/orders', handleOrder);
 app.use('/api/subscription', handleSubscription); // Handles POST and PATCH
 app.post('/api/verify-payment', handleWebhook);
+app.get('/api/verify-payment/:reference', handleManualVerification);
 
 // Health Check
 app.get('/api/health', async (req, res) => {

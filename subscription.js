@@ -1,5 +1,5 @@
 // api/subscription.js - Handle Subscription Verification & Tinubu Overrides
-const { db, verifyPaystack, processSubscription } = require('../backend');
+const { db, verifyPaystack, processSubscription } = require('./backend');
 
 const handleSubscription = async (req, res) => {
     // Handle Tinubu Panel Price Updates (POST with special action)
