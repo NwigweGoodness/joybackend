@@ -1,6 +1,7 @@
 // backend.js - Core Shared Utility for AURACIOUS SIP API
 require('dotenv').config();
-const { admin, db } = require('./firebaseAdmin');
+const path = require('path');
+const { admin, db } = require(path.join(__dirname, 'firebaseAdmin'));
 const axios = require('axios');
 const express = require('express');
 const cors = require('cors');
@@ -215,9 +216,9 @@ app.use(cors()); // Enables CORS for frontend domain
 module.exports = { admin, db, axios, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription, app };
 
 // 7. Modular Routes
-const { handleOrder } = require('./orders');
-const { handleSubscription } = require('./subscription');
-const { handleWebhook } = require('./verify-payment');
+const { handleOrder } = require(path.join(__dirname, 'orders'));
+const { handleSubscription } = require(path.join(__dirname, 'subscription'));
+const { handleWebhook } = require(path.join(__dirname, 'verify-payment'));
 
 app.post('/api/orders', handleOrder);
 app.use('/api/subscription', handleSubscription); // Handles POST and PATCH
