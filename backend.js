@@ -6,6 +6,7 @@ const axios = require('axios');
 const express = require('express');
 const cors = require('cors');
 const crypto = require('crypto');
+const cron = require('node-cron');
 
 // 0. Environment Validation
 const REQUIRED_ENV = [
@@ -207,6 +208,36 @@ const processSubscription = async (reference, months, amountPaid, frontendAmount
     return { success: true, expiresAt: newExpiry, message: 'Subscription processed successfully' };
 };
 
+// 5.5 Auto-Expiration CRON Job
+// Runs every hour to check if the platform subscription has reached its end date.
+// If expired, it sets 'active' to false to trigger the lock screen on the frontend.
+cron.schedule('0 * * * *', async () => {
+    try {
+        const subRef = db.ref('subscription');
+        const snapshot = await subRef.once('value');
+        const sub = snapshot.val();
+
+        if (sub && sub.active !== false && sub.expiresAt) {
+            const now = Date.now();
+            if (sub.expiresAt < now) {
+                // Update the status to inactive
+                await subRef.update({ 
+                    active: false, 
+                    updatedAt: admin.database.ServerValue.TIMESTAMP 
+                });
+                
+                await db.ref('devLogs').push({
+                    time: now,
+                    msg: "AUTO-EXPIRY: Subscription period ended. Platform access is now restricted."
+                });
+                console.log('[CRON] Subscription expiry processed successfully.');
+            }
+        }
+    } catch (error) {
+        console.error('[CRON] Error during subscription expiry check:', error.message);
+    }
+});
+
 // 6. Express Server Setup
 const app = express();
 app.use(express.json());
@@ -216,9 +247,9 @@ app.use(cors()); // Enables CORS for frontend domain
 module.exports = { admin, db, axios, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription, app };
 
 // 7. Modular Routes
-const { handleOrder } = require('./orders');
-const { handleSubscription } = require('./subscription');
-const { handleWebhook, handleManualVerification } = require('./verify-payment');
+const { handleOrder } = require('orders');
+const { handleSubscription } = require('subscription');
+const { handleWebhook, handleManualVerification } = require('verify-payment');
 
 app.post('/api/orders', handleOrder);
 app.use('/api/subscription', handleSubscription); // Handles POST and PATCH
