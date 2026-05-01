@@ -156,34 +156,60 @@ const processOrder = async (reference, orderData, amountPaid, isWebhook = false)
 const processSubscription = async (reference, months, amountPaid, frontendAmount, isWebhook = false) => {
     await logVerification(reference, 'Subscription', 'Attempt', 'Processing subscription via core logic');
 
-    // Idempotency Check
-    const historySnap = await db.ref('subscription/history').orderByChild('reference').equalTo(reference).limitToFirst(1).once('value');
-    if (historySnap.exists()) {
-        await logVerification(reference, 'Subscription', 'Success', 'Idempotency: Subscription already updated');
-        return { success: true, message: 'Subscription already updated' };
-    }
-
     if (frontendAmount && amountPaid < (parseFloat(frontendAmount) - 0.05)) {
         await logVerification(reference, 'Subscription', 'Failed', `Amount mismatch: Paid ${amountPaid}, Expected ${frontendAmount}`);
         throw new Error('Amount mismatch');
     }
 
-    const subRef = db.ref('subscription');
-    const snapshot = await subRef.once('value');
-    const currentSub = snapshot.val() || { expiresAt: Date.now() };
+    const now = Date.now();
+    const historyRef = db.ref('subscription/history').push();
+    const historyKey = historyRef.key;
 
-    const baseDate = (currentSub.expiresAt && currentSub.expiresAt > Date.now()) ? currentSub.expiresAt : Date.now();
-    const newExpiry = baseDate + (months * 30 * 24 * 60 * 60 * 1000);
+    try {
+        const result = await db.ref().transaction((currentData) => {
+            if (currentData === null) return currentData;
 
-    await subRef.update({ active: true, expiresAt: newExpiry, systemLocked: false, lastPaymentDate: Date.now(), updatedAt: admin.database.ServerValue.TIMESTAMP });
-    await db.ref('subscription/history').push({ amount: amountPaid, months: months, date: Date.now(), reference: reference, status: 'Successful' });
-    await db.ref('analytics/monthlySales').transaction(c => (c || 0) + amountPaid);
-    
-    await db.ref(`transactions/${reference}`).update({ 
-        status: 'Successful', 
-        amount: amountPaid, 
-        updatedAt: admin.database.ServerValue.TIMESTAMP 
-    });
+            // 1. Idempotency Check
+            const history = currentData.subscription?.history || {};
+            const isDuplicate = Object.values(history).some(h => h.reference === reference);
+            if (isDuplicate) return; // Abort: Already processed
+
+            // 2. Calculate New Expiry (Stacking logic)
+            const sub = currentData.subscription || {};
+            const baseDate = (sub.expiresAt && sub.expiresAt > now) ? sub.expiresAt : now;
+            const newExpiry = baseDate + (months * 30 * 24 * 60 * 60 * 1000);
+
+            // 3. Update Subscription State
+            currentData.subscription = {
+                ...sub,
+                active: true,
+                expiresAt: newExpiry,
+                systemLocked: false,
+                lastPaymentDate: now,
+                updatedAt: now
+            };
+
+            // 4. Update History, Transactions, and Analytics
+            currentData.subscription.history = currentData.subscription.history || {};
+            currentData.subscription.history[historyKey] = { amount: amountPaid, months, date: now, reference, status: 'Successful' };
+            
+            currentData.transactions = currentData.transactions || {};
+            currentData.transactions[reference] = { status: 'Successful', amount: amountPaid, updatedAt: now };
+            
+            currentData.analytics = currentData.analytics || {};
+            currentData.analytics.monthlySales = (currentData.analytics.monthlySales || 0) + amountPaid;
+
+            return currentData;
+        });
+
+        if (!result.committed) {
+            await logVerification(reference, 'Subscription', 'Success', 'Idempotency: Subscription already updated');
+            return { success: true, message: 'Subscription already updated' };
+        }
+    } catch (error) {
+        console.error("Subscription Transaction Error:", error.message);
+        throw error;
+    }
 
     await db.ref('devLogs').push({ time: Date.now(), msg: `SYSTEM RESTORE: Subscription renewed via Paystack (Ref: ${reference}). Platform access extended for ${months} month(s).` });
 
