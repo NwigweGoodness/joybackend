@@ -69,97 +69,87 @@ const verifyPaystack = async (reference) => {
 const processOrder = async (reference, orderData, amountPaid, isWebhook = false) => {
     await logVerification(reference, 'Order', 'Attempt', 'Processing order via core logic');
 
-    // Idempotency Check: Prevent duplicate orders for the same reference
-    const existingOrderSnap = await db.ref('orders').orderByChild('paymentReference').equalTo(reference).limitToFirst(1).once('value');
-    if (existingOrderSnap.exists()) {
-        let existingOrder;
-        existingOrderSnap.forEach(c => { existingOrder = c.val(); });
-        await logVerification(reference, 'Order', 'Success', 'Idempotency: Order already exists');
-        return { success: true, order: existingOrder, message: 'Order already processed' };
-    }
+    const orderRef = db.ref('orders').push();
+    const orderKey = orderRef.key;
+    const ticketNumber = `AUS-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
+    const now = Date.now();
 
-    // Security: DB Price Lookup & Stock Pre-check
-    const productRequests = orderData.items.map(item => db.ref(`products/${item.id}`).once('value'));
-    const productSnapshots = await Promise.all(productRequests);
-    
-    // Map snapshots to IDs for reliable lookup
-    const productMap = new Map();
-    productSnapshots.forEach(snap => { if(snap.exists()) productMap.set(snap.key, snap.val()); });
+    try {
+        const result = await db.ref().transaction((currentData) => {
+            if (currentData === null) return currentData;
 
-    let expectedAmount = 0;
-    const verifiedItems = [];
+            // 1. Idempotency Check: Ensure reference doesn't already exist in orders
+            const orders = currentData.orders || {};
+            const isDuplicate = Object.values(orders).some(o => o.paymentReference === reference);
+            if (isDuplicate) return; // Abort transaction (it will return committed: false)
 
-    for (const originalItem of orderData.items) {
-        const product = productMap.get(originalItem.id);
+            // 2. Stock & Price Validation
+            let expectedAmount = 0;
+            const products = currentData.products || {};
+            const verifiedItems = [];
 
-        if (!product || (product.stock || 0) < originalItem.quantity) {
-            await logVerification(reference, 'Order', 'Failed', `Stock error: ${originalItem.name}`);
-            throw new Error(`Product unavailable or out of stock: ${originalItem.name}`);
+            for (const item of orderData.items) {
+                const p = products[item.id];
+                if (!p || (p.stock || 0) < item.quantity) {
+                    return; // Abort: Product missing or insufficient stock
+                }
+                const currentPrice = parseFloat(p.price);
+                expectedAmount += currentPrice * item.quantity;
+                verifiedItems.push({ ...item, price: currentPrice });
+                
+                // Deduct Stock
+                p.stock -= item.quantity;
+            }
+
+            // 3. Amount Mismatch Validation
+            if (Math.abs(amountPaid - expectedAmount) >= 0.01) return; 
+
+            // 4. Construct Order and Update Analytics
+            const newOrder = {
+                customerName: orderData.customerName,
+                email: orderData.email,
+                phone: orderData.phone,
+                address: orderData.address,
+                note: orderData.note,
+                items: verifiedItems,
+                amount: amountPaid,
+                ticketNumber: ticketNumber,
+                orderStatus: 'Pending',
+                paymentStatus: 'Paid',
+                paymentReference: reference,
+                createdAt: now
+            };
+
+            currentData.orders[orderKey] = newOrder;
+            currentData.transactions = currentData.transactions || {};
+            currentData.transactions[reference] = { status: 'Successful', amount: amountPaid, updatedAt: now };
+            
+            currentData.analytics = currentData.analytics || {};
+            currentData.analytics.totalRevenue = (currentData.analytics.totalRevenue || 0) + amountPaid;
+            currentData.analytics.successfulPayments = (currentData.analytics.successfulPayments || 0) + 1;
+
+            return currentData;
+        });
+
+        if (!result.committed) {
+            await logVerification(reference, 'Order', 'Failed', 'Transaction aborted: Stock, Amount, or Idempotency failure');
+            throw new Error('Order verification failed or item out of stock.');
         }
 
-        const currentPrice = parseFloat(product.price);
-        expectedAmount += currentPrice * originalItem.quantity;
-        verifiedItems.push({ ...originalItem, price: currentPrice });
+        if (isWebhook) {
+            await db.ref('devLogs').push({
+                time: now,
+                msg: `WEBHOOK RECOVERY: Successfully processed order ${reference}.`
+            });
+        }
+
+        await logVerification(reference, 'Order', 'Success', 'Order verified and stock updated');
+        return { success: true, message: 'Order processed successfully' };
+
+    } catch (error) {
+        console.error("Atomic Order Processing Error:", error.message);
+        throw error;
     }
-
-    if (Math.abs(amountPaid - expectedAmount) >= 0.01) {
-        await logVerification(reference, 'Order', 'Failed', `Amount mismatch: Paid ${amountPaid}, Expected ${expectedAmount}`);
-        throw new Error(`Amount mismatch: Paid ${amountPaid}, Expected ${expectedAmount}`);
-    }
-
-    // Atomic Stock Deduction
-    const stockDeductions = verifiedItems.map(item => {
-        return db.ref(`products/${item.id}/stock`).transaction(currentStock => {
-            if (currentStock !== null && currentStock >= item.quantity) {
-                return currentStock - item.quantity;
-            }
-            return; // Abort transaction if stock became insufficient
-        });
-    });
-
-    const deductionResults = await Promise.all(stockDeductions);
-    if (deductionResults.some(r => !r.committed)) {
-        await logVerification(reference, 'Order', 'Failed', 'Atomic stock update conflict');
-        throw new Error('Stock update conflict: One or more items became unavailable.');
-    }
-
-    const ticketNumber = `AUS-${new Date().getFullYear()}-${Math.floor(100000 + Math.random() * 900000)}`;
-
-    const newOrder = {
-        customerName: orderData.customerName,
-        email: orderData.email,
-        phone: orderData.phone,
-        address: orderData.address,
-        note: orderData.note,
-        items: verifiedItems,
-        amount: amountPaid,
-        ticketNumber: ticketNumber,
-        orderStatus: 'Pending',
-        paymentStatus: 'Paid',
-        paymentReference: reference,
-        createdAt: admin.database.ServerValue.TIMESTAMP
-    };
-
-    const orderRef = db.ref('orders').push();
-    await orderRef.set(newOrder);
-
-    await db.ref(`transactions/${reference}`).update({ 
-        status: 'Successful', 
-        amount: amountPaid, 
-        updatedAt: admin.database.ServerValue.TIMESTAMP 
-    });
-    await db.ref('analytics/totalRevenue').transaction(c => (c || 0) + amountPaid);
-    await db.ref('analytics/successfulPayments').transaction(c => (c || 0) + 1);
-
-    if (isWebhook) {
-        await db.ref('devLogs').push({
-            time: Date.now(),
-            msg: `WEBHOOK RECOVERY: Successfully processed order for ${reference} which was missed by the frontend.`
-        });
-    }
-
-    await logVerification(reference, 'Order', 'Success', 'Order verified and stock updated');
-    return { success: true, order: newOrder, message: 'Order processed successfully' };
 };
 
 // 5. Core Subscription Processing Logic
