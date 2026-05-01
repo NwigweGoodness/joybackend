@@ -163,6 +163,7 @@ const processSubscription = async (reference, months, amountPaid, frontendAmount
     const now = Date.now();
     const historyRef = db.ref('subscription/history').push();
     const historyKey = historyRef.key;
+    let newExpiry;
 
     try {
         const result = await db.ref().transaction((currentData) => {
@@ -176,7 +177,7 @@ const processSubscription = async (reference, months, amountPaid, frontendAmount
             // 2. Calculate New Expiry (Stacking logic)
             const sub = currentData.subscription || {};
             const baseDate = (sub.expiresAt && sub.expiresAt > now) ? sub.expiresAt : now;
-            const newExpiry = baseDate + (months * 30 * 24 * 60 * 60 * 1000);
+            newExpiry = baseDate + (months * 30 * 24 * 60 * 60 * 1000);
 
             // 3. Update Subscription State
             currentData.subscription = {
