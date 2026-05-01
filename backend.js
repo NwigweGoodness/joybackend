@@ -1,7 +1,6 @@
 // backend.js - Core Shared Utility for AURACIOUS SIP API
 require('dotenv').config();
-const path = require('path');
-const { admin, db } = require(path.join(__dirname, 'firebaseAdmin'));
+const { admin, db } = require('./firebaseAdmin');
 const axios = require('axios');
 const express = require('express');
 const cors = require('cors');
