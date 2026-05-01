@@ -54,9 +54,9 @@ const verifyPaystack = async (reference) => {
         timeout: 10000
     });
 
-    const data = response.data.data;
+    const data = response.data?.data;
     if (!data || data.status !== 'success') {
-        throw new Error(data ? `Gateway Status: ${data.status}` : "Invalid response from Paystack");
+        throw new Error(data?.status ? `Gateway Status: ${data.status}` : "Invalid response from Paystack");
     }
 
     return {
@@ -72,9 +72,9 @@ const processOrder = async (reference, orderData, amountPaid, isWebhook = false)
     // Idempotency Check: Prevent duplicate orders for the same reference
     const existingOrderSnap = await db.ref('orders').orderByChild('paymentReference').equalTo(reference).limitToFirst(1).once('value');
     if (existingOrderSnap.exists()) {
-        await logVerification(reference, 'Order', 'Success', 'Idempotency: Order already exists');
         let existingOrder;
         existingOrderSnap.forEach(c => { existingOrder = c.val(); });
+        await logVerification(reference, 'Order', 'Success', 'Idempotency: Order already exists');
         return { success: true, order: existingOrder, message: 'Order already processed' };
     }
 
@@ -247,9 +247,9 @@ app.use(cors()); // Enables CORS for frontend domain
 module.exports = { admin, db, axios, PAYSTACK_SECRET_KEY, logVerification, verifyPaystack, processOrder, processSubscription, app };
 
 // 7. Modular Routes
-const { handleOrder } = require('orders');
-const { handleSubscription } = require('subscription');
-const { handleWebhook, handleManualVerification } = require('verify-payment');
+const { handleOrder } = require('./orders');
+const { handleSubscription } = require('./subscription');
+const { handleWebhook, handleManualVerification } = require('./verify-payment');
 
 app.post('/api/orders', handleOrder);
 app.use('/api/subscription', handleSubscription); // Handles POST and PATCH
@@ -288,7 +288,7 @@ app.use((err, req, res, next) => {
     res.status(500).json({ success: false, message: "Internal server error" });
 });
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`AURACIOUS SIP Backend Live on Port ${PORT}`);
 });
